@@ -3,59 +3,69 @@ export const config = {
   regions: ['iad1', 'sfo1', 'cdg1', 'hnd1']
 };
 
+// =============================================================================
+// CONFIGURACIÓN
+// =============================================================================
+
 const SUPABASE_PROJECT_URL = 'https://ihizgnjcrgjobkuhjsna.supabase.co';
-const DOMAIN_ROUTER_URL = `${SUPABASE_PROJECT_URL}/functions/v1/domain-router`;
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImloaXpnbmpjcmdqb2JrdWhqc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM3NDE5NTgsImV4cCI6MjA3OTMxNzk1OH0.4-q4GAGNJzDZ64JVu2mWMoS9nvQEZZDG-vPKvcuzoTY';
+
+// URLs directas a las Edge Functions (sin pasar por domain-router)
+const REDIRECT_FUNCTION_URL = `${SUPABASE_PROJECT_URL}/functions/v1/redirect`;
+const BIOPAGE_FUNCTION_URL = `${SUPABASE_PROJECT_URL}/functions/v1/biopage-serve`;
 const PROXY_CONFIG_URL = `${SUPABASE_PROJECT_URL}/functions/v1/proxy-config`;
 
-let domainConfigCache: { data: any; expires: number } | null = null;
+// Cache de configuración de dominios (5 minutos)
+let domainConfigCache: { data: Map<string, string>; expires: number } | null = null;
 const CACHE_TTL = 5 * 60 * 1000;
 
+// Paths a ignorar
 const IGNORED_PATHS = ['favicon.ico', 'robots.txt', 'sitemap.xml', '.well-known', '_next', 'static'];
 
-async function getDomainConfig(domain: string): Promise<{ purpose: string; found: boolean } | null> {
+// =============================================================================
+// FUNCIONES AUXILIARES
+// =============================================================================
+
+async function getDomainPurpose(domain: string): Promise<string> {
   try {
     if (domainConfigCache && domainConfigCache.expires > Date.now()) {
-      const cached = domainConfigCache.data.domains?.find((d: any) => d.domain === domain);
+      const cached = domainConfigCache.data.get(domain);
       if (cached) {
-        return { purpose: cached.purpose || 'links', found: true };
+        console.log(`[Vercel Proxy] Cache hit for ${domain}: ${cached}`);
+        return cached;
       }
     }
 
     const response = await fetch(`${PROXY_CONFIG_URL}?domain=${encodeURIComponent(domain)}`, {
       method: 'GET',
-      headers: { 'Accept': 'application/json' },
+      headers: { 
+        'Accept': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+      },
     });
 
     if (response.ok) {
       const data = await response.json();
-      return { purpose: data.purpose || 'links', found: data.found || false };
+      const purpose = data.purpose || 'links';
+      
+      if (!domainConfigCache || domainConfigCache.expires <= Date.now()) {
+        domainConfigCache = { data: new Map(), expires: Date.now() + CACHE_TTL };
+      }
+      domainConfigCache.data.set(domain, purpose);
+      
+      console.log(`[Vercel Proxy] Fetched purpose for ${domain}: ${purpose}`);
+      return purpose;
     }
   } catch (error) {
     console.error('[Vercel Proxy] Error fetching domain config:', error);
   }
   
-  return null;
+  return 'links';
 }
 
-async function refreshDomainCache(): Promise<void> {
-  try {
-    const response = await fetch(PROXY_CONFIG_URL, {
-      method: 'GET',
-      headers: { 'Accept': 'application/json' },
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      domainConfigCache = {
-        data: data,
-        expires: Date.now() + CACHE_TTL,
-      };
-      console.log(`[Vercel Proxy] Cache refreshed with ${data.domains?.length || 0} domains`);
-    }
-  } catch (error) {
-    console.error('[Vercel Proxy] Error refreshing cache:', error);
-  }
-}
+// =============================================================================
+// HANDLER PRINCIPAL
+// =============================================================================
 
 export default async function handler(request: Request): Promise<Response> {
   const url = new URL(request.url);
@@ -80,6 +90,7 @@ export default async function handler(request: Request): Promise<Response> {
     'User-Agent': userAgent,
     'Referer': referer,
     'Accept': request.headers.get('accept') || '*/*',
+    'apikey': SUPABASE_ANON_KEY,
   };
 
   const cfCountry = request.headers.get('cf-ipcountry');
@@ -91,13 +102,19 @@ export default async function handler(request: Request): Promise<Response> {
   if (cfIp) proxyHeaders['cf-connecting-ip'] = cfIp;
   
   try {
-    const routerUrl = new URL(DOMAIN_ROUTER_URL);
-    routerUrl.searchParams.set('domain', host);
-    routerUrl.searchParams.set('path', path);
+    const purpose = await getDomainPurpose(host);
     
-    console.log(`[Vercel Proxy] Routing via domain-router: ${routerUrl.toString()}`);
+    let targetUrl: string;
     
-    const response = await fetch(routerUrl.toString(), {
+    if (purpose === 'biopage') {
+      targetUrl = `${BIOPAGE_FUNCTION_URL}?slug=${encodeURIComponent(path)}`;
+      console.log(`[Vercel Proxy] Routing to biopage-serve: ${path}`);
+    } else {
+      targetUrl = `${REDIRECT_FUNCTION_URL}?code=${encodeURIComponent(path)}&domain=${encodeURIComponent(host)}`;
+      console.log(`[Vercel Proxy] Routing to redirect: code=${path}, domain=${host}`);
+    }
+    
+    const response = await fetch(targetUrl, {
       method: 'GET',
       headers: proxyHeaders,
     });
@@ -105,6 +122,7 @@ export default async function handler(request: Request): Promise<Response> {
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
       if (location) {
+        console.log(`[Vercel Proxy] Redirect to: ${location}`);
         return Response.redirect(location, response.status);
       }
     }
@@ -171,7 +189,7 @@ export default async function handler(request: Request): Promise<Response> {
 <body>
   <div class="container">
     <h1>503</h1>
-    <p>El servicio no esta disponible temporalmente. Por favor intenta de nuevo en unos segundos.</p>
+    <p>El servicio no está disponible temporalmente. Por favor intenta de nuevo en unos segundos.</p>
     <button class="retry" onclick="location.reload()">Reintentar</button>
   </div>
   <div class="brand">Powered by SEOMole</div>
@@ -184,4 +202,3 @@ export default async function handler(request: Request): Promise<Response> {
     });
   }
 }
-
