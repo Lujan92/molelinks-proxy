@@ -3,48 +3,21 @@ export const config = {
   regions: ['iad1', 'sfo1', 'cdg1', 'hnd1']
 };
 
-// =============================================================================
-// CONFIGURACIÓN
-// =============================================================================
-
 const SUPABASE_PROJECT_URL = 'https://ihizgnjcrgjobkuhjsna.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImloaXpnbmpjcmdqb2JrdWhqc25hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM3NDE5NTgsImV4cCI6MjA3OTMxNzk1OH0.4-q4GAGNJzDZ64JVu2mWMoS9nvQEZZDG-vPKvcuzoTY';
 
 const REDIRECT_FUNCTION_URL = `${SUPABASE_PROJECT_URL}/functions/v1/redirect`;
 const BIOPAGE_FUNCTION_URL = `${SUPABASE_PROJECT_URL}/functions/v1/biopage-serve`;
-const PROXY_CONFIG_URL = `${SUPABASE_PROJECT_URL}/functions/v1/proxy-config`;
 
-let domainConfigCache: { data: Map<string, string>; expires: number } | null = null;
-const CACHE_TTL = 5 * 60 * 1000;
+// Dominios hardcodeados para evitar llamadas API extra
+const DOMAIN_PURPOSES: Record<string, string> = {
+  'links.seomole.io': 'links',
+  'bio.seomole.io': 'biopage',
+  'molelinks.seomole.io': 'links',
+  'ctu.mx': 'links',
+};
 
 const IGNORED_PATHS = ['favicon.ico', 'robots.txt', 'sitemap.xml', '.well-known', '_next', 'static'];
-
-async function getDomainPurpose(domain: string): Promise<string> {
-  try {
-    if (domainConfigCache && domainConfigCache.expires > Date.now()) {
-      const cached = domainConfigCache.data.get(domain);
-      if (cached) return cached;
-    }
-
-    const response = await fetch(`${PROXY_CONFIG_URL}?domain=${encodeURIComponent(domain)}`, {
-      method: 'GET',
-      headers: { 'Accept': 'application/json', 'apikey': SUPABASE_ANON_KEY },
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const purpose = data.purpose || 'links';
-      if (!domainConfigCache || domainConfigCache.expires <= Date.now()) {
-        domainConfigCache = { data: new Map(), expires: Date.now() + CACHE_TTL };
-      }
-      domainConfigCache.data.set(domain, purpose);
-      return purpose;
-    }
-  } catch (error) {
-    console.error('[Vercel Proxy] Error fetching domain config:', error);
-  }
-  return 'links';
-}
 
 export default async function handler(request: Request): Promise<Response> {
   const url = new URL(request.url);
@@ -65,26 +38,21 @@ export default async function handler(request: Request): Promise<Response> {
     'X-Forwarded-Host': host,
     'User-Agent': userAgent,
     'Referer': referer,
-    'Accept': request.headers.get('accept') || '*/*',
     'apikey': SUPABASE_ANON_KEY,
   };
-
+  
   const cfCountry = request.headers.get('cf-ipcountry');
   const cfCity = request.headers.get('cf-ipcity');
-  const cfIp = request.headers.get('cf-connecting-ip');
-  
   if (cfCountry) proxyHeaders['cf-ipcountry'] = cfCountry;
   if (cfCity) proxyHeaders['cf-ipcity'] = cfCity;
-  if (cfIp) proxyHeaders['cf-connecting-ip'] = cfIp;
   
   try {
-    const isBiopagePath = path.startsWith('bio/');
     let targetUrl: string;
     
-    if (isBiopagePath) {
+    if (path.startsWith('bio/')) {
       targetUrl = `${REDIRECT_FUNCTION_URL}?path=${encodeURIComponent(path)}&domain=${encodeURIComponent(host)}`;
     } else {
-      const purpose = await getDomainPurpose(host);
+      const purpose = DOMAIN_PURPOSES[host] || 'links';
       if (purpose === 'biopage') {
         targetUrl = `${BIOPAGE_FUNCTION_URL}?slug=${encodeURIComponent(path)}`;
       } else {
@@ -100,24 +68,21 @@ export default async function handler(request: Request): Promise<Response> {
     }
     
     const body = await response.text();
-    let contentType = response.headers.get('content-type') || '';
-    
-    if (body.trim().startsWith('<!DOCTYPE') || body.trim().startsWith('<html')) {
-      contentType = 'text/html; charset=utf-8';
-    } else if (!contentType) {
-      contentType = 'text/html; charset=utf-8';
-    }
-    
-    const responseHeaders: Record<string, string> = { 'Content-Type': contentType };
-    const cacheControl = response.headers.get('cache-control');
-    responseHeaders['Cache-Control'] = cacheControl || 'no-cache, no-store, must-revalidate';
-    
-    return new Response(body, { status: response.status, headers: responseHeaders });
+    return new Response(body, {
+      status: response.status,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      },
+    });
     
   } catch (error) {
-    console.error('[Vercel Proxy] Error:', error);
-    const errorHtml = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Servicio no disponible</title><style>*{margin:0;padding:0;box-sizing:border-box}body{min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif;background:linear-gradient(135deg,#0c4a6e 0%,#0369a1 100%);color:white;text-align:center;padding:2rem}.container{max-width:400px}h1{font-size:3rem;font-weight:700;margin-bottom:1rem}p{font-size:1rem;margin-bottom:2rem;opacity:0.9}.retry{display:inline-block;padding:0.75rem 2rem;background:white;color:#0369a1;text-decoration:none;border-radius:9999px;font-weight:600;cursor:pointer;border:none;font-size:1rem}.brand{position:fixed;bottom:1rem;font-size:0.75rem;opacity:0.6}</style></head><body><div class="container"><h1>503</h1><p>El servicio no está disponible temporalmente. Por favor intenta de nuevo en unos segundos.</p><button class="retry" onclick="location.reload()">Reintentar</button></div><div class="brand">Powered by SEOMole</div></body></html>`;
-    return new Response(errorHtml, { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+    console.error('[Proxy] Error:', error);
+    return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Error</title><style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0c4a6e;color:white;text-align:center}h1{font-size:2rem;margin-bottom:1rem}button{padding:0.75rem 2rem;background:white;color:#0369a1;border:none;border-radius:9999px;cursor:pointer}</style></head><body><div><h1>503</h1><p>Servicio temporalmente no disponible</p><button onclick="location.reload()">Reintentar</button></div></body></html>`, { 
+      status: 503, 
+      headers: { 'Content-Type': 'text/html; charset=utf-8' } 
+    });
   }
 }
+
 
