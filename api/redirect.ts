@@ -9,12 +9,13 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const REDIRECT_FUNCTION_URL = `${SUPABASE_PROJECT_URL}/functions/v1/redirect`;
 const BIOPAGE_FUNCTION_URL = `${SUPABASE_PROJECT_URL}/functions/v1/biopage-serve`;
 
-// Dominios hardcodeados para evitar llamadas API extra
+// Dominios conocidos - hardcodeados para evitar llamadas API extra
 const DOMAIN_PURPOSES: Record<string, string> = {
   'links.seomole.io': 'links',
   'bio.seomole.io': 'biopage',
   'molelinks.seomole.io': 'links',
   'ctu.mx': 'links',
+  'links.seedup.la': 'links',
 };
 
 const IGNORED_PATHS = ['favicon.ico', 'robots.txt', 'sitemap.xml', '.well-known', '_next', 'static'];
@@ -24,10 +25,12 @@ export default async function handler(request: Request): Promise<Response> {
   const host = request.headers.get('host')?.split(':')[0] || '';
   const path = url.pathname.slice(1);
   
+  // Ignorar recursos estáticos
   if (!path || IGNORED_PATHS.some(ignored => path.startsWith(ignored))) {
     return new Response('Not Found', { status: 404 });
   }
   
+  // Headers del cliente
   const clientIP = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() 
     || request.headers.get('x-real-ip') || '';
   const userAgent = request.headers.get('user-agent') || '';
@@ -41,6 +44,7 @@ export default async function handler(request: Request): Promise<Response> {
     'apikey': SUPABASE_ANON_KEY,
   };
   
+  // Headers de Cloudflare
   const cfCountry = request.headers.get('cf-ipcountry');
   const cfCity = request.headers.get('cf-ipcity');
   if (cfCountry) proxyHeaders['cf-ipcountry'] = cfCountry;
@@ -48,13 +52,17 @@ export default async function handler(request: Request): Promise<Response> {
   
   try {
     let targetUrl: string;
+    let isBiopageDirect = false;
     
+    // Determinar destino basado en path y dominio
     if (path.startsWith('bio/')) {
       targetUrl = `${REDIRECT_FUNCTION_URL}?path=${encodeURIComponent(path)}&domain=${encodeURIComponent(host)}`;
     } else {
-      const purpose = DOMAIN_PURPOSES[host] || 'links';
+      const purpose = DOMAIN_PURPOSES[host] || 'unknown';
+      
       if (purpose === 'biopage') {
         targetUrl = `${BIOPAGE_FUNCTION_URL}?slug=${encodeURIComponent(path)}`;
+        isBiopageDirect = true;
       } else {
         targetUrl = `${REDIRECT_FUNCTION_URL}?code=${encodeURIComponent(path)}&domain=${encodeURIComponent(host)}`;
       }
@@ -62,12 +70,37 @@ export default async function handler(request: Request): Promise<Response> {
     
     const response = await fetch(targetUrl, { method: 'GET', headers: proxyHeaders });
     
+    // Fallback: if link not found (404) and not already a biopage request, try biopage-serve
+    if (response.status === 404 && !isBiopageDirect) {
+      const biopageFallbackUrl = `${BIOPAGE_FUNCTION_URL}?slug=${encodeURIComponent(path)}`;
+      const biopageResponse = await fetch(biopageFallbackUrl, { method: 'GET', headers: proxyHeaders });
+      
+      if (biopageResponse.status !== 404) {
+        // Biopage found — use this response
+        if (biopageResponse.status >= 300 && biopageResponse.status < 400) {
+          const location = biopageResponse.headers.get('location');
+          if (location) return Response.redirect(location, biopageResponse.status);
+        }
+        const body = await biopageResponse.text();
+        return new Response(body, {
+          status: biopageResponse.status,
+          headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+          },
+        });
+      }
+    }
+    
+    // Redirects
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
       if (location) return Response.redirect(location, response.status);
     }
     
+    // HTML/otros responses
     const body = await response.text();
+    
     return new Response(body, {
       status: response.status,
       headers: {
@@ -84,5 +117,3 @@ export default async function handler(request: Request): Promise<Response> {
     });
   }
 }
-
-
