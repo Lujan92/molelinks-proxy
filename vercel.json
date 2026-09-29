@@ -1,5 +1,17 @@
 {
   "rewrites": [
+    {
+      "source": "/mcp",
+      "destination": "https://ihizgnjcrgjobkuhjsna.supabase.co/functions/v1/mcp"
+    },
+    {
+      "source": "/mcp/:path*",
+      "destination": "https://ihizgnjcrgjobkuhjsna.supabase.co/functions/v1/mcp/:path*"
+    },
+    {
+      "source": "/.well-known/oauth-protected-resource",
+      "destination": "https://ihizgnjcrgjobkuhjsna.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource"
+    },
     { 
       "source": "/:path*", 
       "destination": "/api/redirect" 
