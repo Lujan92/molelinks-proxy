@@ -342,7 +342,9 @@ export default async function handler(request: Request): Promise<Response> {
         : (upstreamContentType || 'text/html; charset=utf-8'),
       'Cache-Control': response.headers.get('cache-control') || 'no-cache, no-store, must-revalidate',
     };
-    for (const headerName of ['content-security-policy', 'x-content-type-options', 'referrer-policy']) {
+    // No reenviar content-security-policy: el backend añade "default-src 'none'; sandbox"
+    // que bloquea estilos, scripts, píxeles y la redirección de la página intermedia.
+    for (const headerName of ['referrer-policy']) {
       const value = response.headers.get(headerName);
       if (value) forwardedHeaders[headerName] = value;
     }
